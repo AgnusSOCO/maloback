@@ -1,6 +1,6 @@
 """
-Fully functional main.py for Railway deployment
-This version properly handles all database operations and route imports
+Final working main.py for Railway deployment
+This version fixes the SQLAlchemy instance issue by using a shared db instance
 """
 
 import os
@@ -49,13 +49,62 @@ def test():
         'database_url': 'configured' if app.config['SQLALCHEMY_DATABASE_URI'] else 'not configured'
     })
 
-# Initialize database models within app context
+# Define models directly in main.py to avoid import issues
+class User(db.Model):
+    __tablename__ = 'users'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = db.Column(db.String(255), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.Enum('applicant', 'promoter', 'admin', name='user_role'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Personal information
+    first_name = db.Column(db.String(100), nullable=False)
+    last_name = db.Column(db.String(100), nullable=False)
+    curp = db.Column(db.String(18), unique=True, nullable=False)
+    phone = db.Column(db.String(20))
+    date_of_birth = db.Column(db.Date)
+    
+    # Address
+    street = db.Column(db.String(255))
+    city = db.Column(db.String(100))
+    state = db.Column(db.String(100))
+    postal_code = db.Column(db.String(10))
+    
+    # Status
+    is_active = db.Column(db.Boolean, default=True)
+    is_approved = db.Column(db.Boolean, default=False)
+    contract_scan_url = db.Column(db.String(500))
+
+class BankProvider(db.Model):
+    __tablename__ = 'bank_providers'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String(255), nullable=False)
+    code = db.Column(db.String(20), unique=True, nullable=False)
+    logo_url = db.Column(db.String(500))
+
+class BankCredential(db.Model):
+    __tablename__ = 'bank_credentials'
+    
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
+    provider_id = db.Column(db.String(36), db.ForeignKey('bank_providers.id'), nullable=False)
+    encrypted_username = db.Column(db.Text, nullable=False)
+    encrypted_password = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# Import required modules
+import uuid
+from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_jwt_extended import create_access_token
+from flask import request
+
+# Initialize database
 with app.app_context():
-    # Import models first
     try:
-        from src.models.user import User, BankProvider, BankCredential, AuditLog, Ticket, TicketComment
-        print("✅ Models imported successfully")
-        
         # Create all tables
         db.create_all()
         print("✅ Database tables created")
@@ -75,7 +124,12 @@ with app.app_context():
                 ]
                 
                 for bank_data in banks:
-                    bank = BankProvider(**bank_data)
+                    bank = BankProvider(
+                        id=str(uuid.uuid4()),
+                        name=bank_data['name'],
+                        code=bank_data['code'],
+                        logo_url=bank_data['logo_url']
+                    )
                     db.session.add(bank)
                 
                 db.session.commit()
@@ -83,16 +137,16 @@ with app.app_context():
             
             # Check if admin user exists
             if User.query.filter_by(email='admin@loanplatform.com').first() is None:
-                from werkzeug.security import generate_password_hash
-                
                 admin_user = User(
+                    id=str(uuid.uuid4()),
                     email='admin@loanplatform.com',
                     password_hash=generate_password_hash('admin123'),
                     first_name='Admin',
                     last_name='User',
                     curp='ADMIN123456HDFRRL01',
                     role='admin',
-                    is_active=True
+                    is_active=True,
+                    is_approved=True
                 )
                 db.session.add(admin_user)
                 db.session.commit()
@@ -102,72 +156,117 @@ with app.app_context():
             print(f"⚠️ Seeding error: {e}")
             db.session.rollback()
         
-    except ImportError as e:
-        print(f"⚠️ Could not import models: {e}")
+    except Exception as e:
+        print(f"⚠️ Database initialization error: {e}")
 
-# Import and register routes within app context
-with app.app_context():
+# Authentication endpoints
+@app.route('/api/auth/login', methods=['POST'])
+def login():
     try:
-        from src.routes.auth import auth_bp
-        from src.routes.applicants import applicants_bp  
-        from src.routes.admin import admin_bp
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
         
-        # Register blueprints
-        app.register_blueprint(auth_bp, url_prefix='/api/auth')
-        app.register_blueprint(applicants_bp, url_prefix='/api/applicants')
-        app.register_blueprint(admin_bp, url_prefix='/api/admin')
+        if not email or not password:
+            return jsonify({'message': 'Email and password required'}), 400
         
-        print("✅ All routes registered successfully")
+        # Find user
+        user = User.query.filter_by(email=email).first()
+        if user and check_password_hash(user.password_hash, password):
+            token = create_access_token(identity=user.id)
+            return jsonify({
+                'token': token,
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'role': user.role,
+                    'name': f"{user.first_name} {user.last_name}"
+                }
+            })
+        else:
+            return jsonify({'message': 'Invalid credentials'}), 401
+            
+    except Exception as e:
+        return jsonify({'message': 'Login failed', 'error': str(e)}), 500
+
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    try:
+        data = request.get_json()
         
-    except ImportError as e:
-        print(f"⚠️ Could not import routes: {e}")
+        # Validate required fields
+        required_fields = ['email', 'password', 'first_name', 'last_name', 'curp']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'message': f'{field} is required'}), 400
         
-        # Create basic auth endpoints if routes fail to import
-        from flask import request
-        from werkzeug.security import check_password_hash
-        from flask_jwt_extended import create_access_token
+        # Check if user already exists
+        if User.query.filter_by(email=data['email']).first():
+            return jsonify({'message': 'Email already registered'}), 400
         
-        @app.route('/api/auth/login', methods=['POST'])
-        def basic_login():
-            try:
-                data = request.get_json()
-                email = data.get('email')
-                password = data.get('password')
-                
-                if not email or not password:
-                    return jsonify({'message': 'Email and password required'}), 400
-                
-                # Try to find user
-                user = User.query.filter_by(email=email).first()
-                if user and check_password_hash(user.password_hash, password):
-                    token = create_access_token(identity=user.id)
-                    return jsonify({
-                        'token': token,
-                        'user': {
-                            'id': user.id,
-                            'email': user.email,
-                            'role': user.role,
-                            'name': f"{user.first_name} {user.last_name}"
-                        }
-                    })
-                else:
-                    return jsonify({'message': 'Invalid credentials'}), 401
-                    
-            except Exception as e:
-                return jsonify({'message': 'Login failed', 'error': str(e)}), 500
+        # Create new user
+        user = User(
+            id=str(uuid.uuid4()),
+            email=data['email'],
+            password_hash=generate_password_hash(data['password']),
+            first_name=data['first_name'],
+            last_name=data['last_name'],
+            curp=data['curp'],
+            role=data.get('role', 'applicant'),
+            phone=data.get('phone'),
+            is_active=True
+        )
         
-        @app.route('/api/applicants/banks', methods=['GET'])
-        def basic_banks():
-            try:
-                banks = BankProvider.query.all()
-                return jsonify([{
-                    'id': bank.id,
-                    'name': bank.name,
-                    'code': bank.code,
-                    'logo_url': bank.logo_url
-                } for bank in banks])
-            except Exception as e:
-                return jsonify({'message': 'Failed to fetch banks', 'error': str(e)}), 500
+        db.session.add(user)
+        db.session.commit()
+        
+        # Create token
+        token = create_access_token(identity=user.id)
+        
+        return jsonify({
+            'message': 'User registered successfully',
+            'token': token,
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'role': user.role,
+                'name': f"{user.first_name} {user.last_name}"
+            }
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Registration failed', 'error': str(e)}), 500
+
+# Bank endpoints
+@app.route('/api/applicants/banks', methods=['GET'])
+def get_banks():
+    try:
+        banks = BankProvider.query.all()
+        return jsonify([{
+            'id': bank.id,
+            'name': bank.name,
+            'code': bank.code,
+            'logo_url': bank.logo_url
+        } for bank in banks])
+    except Exception as e:
+        return jsonify({'message': 'Failed to fetch banks', 'error': str(e)}), 500
+
+# Import and register complex routes if available
+try:
+    from src.routes.auth import auth_bp
+    from src.routes.applicants import applicants_bp  
+    from src.routes.admin import admin_bp
+    
+    # Register additional blueprints (these will override the basic ones above if they work)
+    app.register_blueprint(auth_bp, url_prefix='/api/auth')
+    app.register_blueprint(applicants_bp, url_prefix='/api/applicants')
+    app.register_blueprint(admin_bp, url_prefix='/api/admin')
+    
+    print("✅ Complex routes registered successfully")
+    
+except ImportError as e:
+    print(f"⚠️ Using basic routes only: {e}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
