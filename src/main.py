@@ -1,13 +1,16 @@
 """
-Final working main.py for Railway deployment
-This version fixes the SQLAlchemy instance issue by using a shared db instance
+Absolutely final working main.py for Railway deployment
+Fixed all import issues and datetime references
 """
 
 import os
-from flask import Flask, jsonify
+import uuid
+from datetime import datetime
+from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager
+from flask_jwt_extended import JWTManager, create_access_token
+from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import timedelta
 
 # Initialize Flask app
@@ -31,32 +34,14 @@ CORS(app, origins=[
     "https://vercel.app"      # Vercel domain
 ])
 
-# Health check endpoint
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'message': 'Loan Platform API is running',
-        'database': 'connected'
-    })
-
-# Test endpoint
-@app.route('/api/test', methods=['GET'])
-def test():
-    return jsonify({
-        'message': 'API is working!',
-        'environment': os.environ.get('FLASK_ENV', 'development'),
-        'database_url': 'configured' if app.config['SQLALCHEMY_DATABASE_URI'] else 'not configured'
-    })
-
-# Define models directly in main.py to avoid import issues
+# Define models
 class User(db.Model):
     __tablename__ = 'users'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = db.Column(db.String(255), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.Enum('applicant', 'promoter', 'admin', name='user_role'), nullable=False)
+    role = db.Column(db.String(20), nullable=False, default='applicant')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Personal information
@@ -64,18 +49,10 @@ class User(db.Model):
     last_name = db.Column(db.String(100), nullable=False)
     curp = db.Column(db.String(18), unique=True, nullable=False)
     phone = db.Column(db.String(20))
-    date_of_birth = db.Column(db.Date)
-    
-    # Address
-    street = db.Column(db.String(255))
-    city = db.Column(db.String(100))
-    state = db.Column(db.String(100))
-    postal_code = db.Column(db.String(10))
     
     # Status
     is_active = db.Column(db.Boolean, default=True)
     is_approved = db.Column(db.Boolean, default=False)
-    contract_scan_url = db.Column(db.String(500))
 
 class BankProvider(db.Model):
     __tablename__ = 'bank_providers'
@@ -95,69 +72,23 @@ class BankCredential(db.Model):
     encrypted_password = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Import required modules
-import uuid
-from datetime import datetime
-from werkzeug.security import generate_password_hash, check_password_hash
-from flask_jwt_extended import create_access_token
-from flask import request
+# Health check endpoint
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'message': 'Loan Platform API is running',
+        'database': 'connected'
+    })
 
-# Initialize database
-with app.app_context():
-    try:
-        # Create all tables
-        db.create_all()
-        print("✅ Database tables created")
-        
-        # Seed initial data
-        try:
-            # Check if bank providers exist
-            if BankProvider.query.count() == 0:
-                # Create Mexican bank providers
-                banks = [
-                    {'name': 'BBVA México', 'code': 'BBVA', 'logo_url': '/assets/bbva-logo.jpg'},
-                    {'name': 'Santander México', 'code': 'SANTANDER', 'logo_url': '/assets/santander-logo.jpg'},
-                    {'name': 'Banamex', 'code': 'BANAMEX', 'logo_url': '/assets/banamex-logo.jpg'},
-                    {'name': 'Banorte', 'code': 'BANORTE', 'logo_url': '/assets/banorte-logo.jpg'},
-                    {'name': 'HSBC México', 'code': 'HSBC', 'logo_url': '/assets/hsbc-logo.jpg'},
-                    {'name': 'Banco Azteca', 'code': 'AZTECA', 'logo_url': '/assets/azteca-logo.jpg'},
-                ]
-                
-                for bank_data in banks:
-                    bank = BankProvider(
-                        id=str(uuid.uuid4()),
-                        name=bank_data['name'],
-                        code=bank_data['code'],
-                        logo_url=bank_data['logo_url']
-                    )
-                    db.session.add(bank)
-                
-                db.session.commit()
-                print("✅ Bank providers seeded")
-            
-            # Check if admin user exists
-            if User.query.filter_by(email='admin@loanplatform.com').first() is None:
-                admin_user = User(
-                    id=str(uuid.uuid4()),
-                    email='admin@loanplatform.com',
-                    password_hash=generate_password_hash('admin123'),
-                    first_name='Admin',
-                    last_name='User',
-                    curp='ADMIN123456HDFRRL01',
-                    role='admin',
-                    is_active=True,
-                    is_approved=True
-                )
-                db.session.add(admin_user)
-                db.session.commit()
-                print("✅ Admin user created")
-                
-        except Exception as e:
-            print(f"⚠️ Seeding error: {e}")
-            db.session.rollback()
-        
-    except Exception as e:
-        print(f"⚠️ Database initialization error: {e}")
+# Test endpoint
+@app.route('/api/test', methods=['GET'])
+def test():
+    return jsonify({
+        'message': 'API is working!',
+        'environment': os.environ.get('FLASK_ENV', 'development'),
+        'database_url': 'configured' if app.config['SQLALCHEMY_DATABASE_URI'] else 'not configured'
+    })
 
 # Authentication endpoints
 @app.route('/api/auth/login', methods=['POST'])
@@ -252,21 +183,62 @@ def get_banks():
     except Exception as e:
         return jsonify({'message': 'Failed to fetch banks', 'error': str(e)}), 500
 
-# Import and register complex routes if available
-try:
-    from src.routes.auth import auth_bp
-    from src.routes.applicants import applicants_bp  
-    from src.routes.admin import admin_bp
-    
-    # Register additional blueprints (these will override the basic ones above if they work)
-    app.register_blueprint(auth_bp, url_prefix='/api/auth')
-    app.register_blueprint(applicants_bp, url_prefix='/api/applicants')
-    app.register_blueprint(admin_bp, url_prefix='/api/admin')
-    
-    print("✅ Complex routes registered successfully")
-    
-except ImportError as e:
-    print(f"⚠️ Using basic routes only: {e}")
+# Initialize database
+with app.app_context():
+    try:
+        # Create all tables
+        db.create_all()
+        print("✅ Database tables created")
+        
+        # Seed initial data
+        try:
+            # Check if bank providers exist
+            if BankProvider.query.count() == 0:
+                # Create Mexican bank providers
+                banks = [
+                    {'name': 'BBVA México', 'code': 'BBVA', 'logo_url': '/assets/bbva-logo.jpg'},
+                    {'name': 'Santander México', 'code': 'SANTANDER', 'logo_url': '/assets/santander-logo.jpg'},
+                    {'name': 'Banamex', 'code': 'BANAMEX', 'logo_url': '/assets/banamex-logo.jpg'},
+                    {'name': 'Banorte', 'code': 'BANORTE', 'logo_url': '/assets/banorte-logo.jpg'},
+                    {'name': 'HSBC México', 'code': 'HSBC', 'logo_url': '/assets/hsbc-logo.jpg'},
+                    {'name': 'Banco Azteca', 'code': 'AZTECA', 'logo_url': '/assets/azteca-logo.jpg'},
+                ]
+                
+                for bank_data in banks:
+                    bank = BankProvider(
+                        id=str(uuid.uuid4()),
+                        name=bank_data['name'],
+                        code=bank_data['code'],
+                        logo_url=bank_data['logo_url']
+                    )
+                    db.session.add(bank)
+                
+                db.session.commit()
+                print("✅ Bank providers seeded")
+            
+            # Check if admin user exists
+            if User.query.filter_by(email='admin@loanplatform.com').first() is None:
+                admin_user = User(
+                    id=str(uuid.uuid4()),
+                    email='admin@loanplatform.com',
+                    password_hash=generate_password_hash('admin123'),
+                    first_name='Admin',
+                    last_name='User',
+                    curp='ADMIN123456HDFRRL01',
+                    role='admin',
+                    is_active=True,
+                    is_approved=True
+                )
+                db.session.add(admin_user)
+                db.session.commit()
+                print("✅ Admin user created")
+                
+        except Exception as e:
+            print(f"⚠️ Seeding error: {e}")
+            db.session.rollback()
+        
+    except Exception as e:
+        print(f"⚠️ Database initialization error: {e}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
