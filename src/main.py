@@ -32,10 +32,10 @@ CORS(app, origins=[
 ])
 
 # Import models and routes after app initialization
-from models.user import *
-from routes.auth import auth_bp
-from routes.applicants import applicants_bp
-from routes.admin import admin_bp
+from src.models.user import *
+from src.routes.auth import auth_bp
+from src.routes.applicants import applicants_bp
+from src.routes.admin import admin_bp
 
 # Register blueprints
 app.register_blueprint(auth_bp, url_prefix='/api/auth')
