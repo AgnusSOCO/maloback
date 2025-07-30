@@ -1,6 +1,6 @@
 """
-Final fixed main.py for Railway deployment
-This version properly handles SQLAlchemy initialization
+Ultimate fixed main.py for Railway deployment
+This version completely avoids the SQLAlchemy initialization issue
 """
 
 import os
@@ -21,8 +21,7 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 
 # Initialize extensions
-db = SQLAlchemy()
-db.init_app(app)
+db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
 # CORS configuration for Vercel
@@ -32,21 +31,6 @@ CORS(app, origins=[
     "https://vercel.app"      # Vercel domain
 ])
 
-# Import models and routes after app initialization
-with app.app_context():
-    from src.models.user import *
-    from src.routes.auth import auth_bp
-    from src.routes.applicants import applicants_bp
-    from src.routes.admin import admin_bp
-
-    # Register blueprints
-    app.register_blueprint(auth_bp, url_prefix='/api/auth')
-    app.register_blueprint(applicants_bp, url_prefix='/api/applicants')
-    app.register_blueprint(admin_bp, url_prefix='/api/admin')
-
-    # Create tables
-    db.create_all()
-
 # Health check endpoint
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -55,7 +39,29 @@ def health_check():
         'message': 'Loan Platform API is running'
     })
 
+# Initialize database and routes after app is fully configured
+def init_app():
+    with app.app_context():
+        # Import models and routes
+        from src.models.user import *
+        from src.routes.auth import auth_bp
+        from src.routes.applicants import applicants_bp
+        from src.routes.admin import admin_bp
+
+        # Register blueprints
+        app.register_blueprint(auth_bp, url_prefix='/api/auth')
+        app.register_blueprint(applicants_bp, url_prefix='/api/applicants')
+        app.register_blueprint(admin_bp, url_prefix='/api/admin')
+
+        # Create tables
+        db.create_all()
+
+# Only initialize if running directly (not during import)
 if __name__ == '__main__':
+    init_app()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+else:
+    # For gunicorn, initialize immediately
+    init_app()
 
