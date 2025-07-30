@@ -1,6 +1,6 @@
 """
-Updated main.py for Railway deployment
-Replace the existing src/main.py with this version
+Final fixed main.py for Railway deployment
+This version properly handles SQLAlchemy initialization
 """
 
 import os
@@ -21,7 +21,8 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 
 # Initialize extensions
-db = SQLAlchemy(app)
+db = SQLAlchemy()
+db.init_app(app)
 jwt = JWTManager(app)
 
 # CORS configuration for Vercel
@@ -32,15 +33,19 @@ CORS(app, origins=[
 ])
 
 # Import models and routes after app initialization
-from src.models.user import *
-from src.routes.auth import auth_bp
-from src.routes.applicants import applicants_bp
-from src.routes.admin import admin_bp
+with app.app_context():
+    from src.models.user import *
+    from src.routes.auth import auth_bp
+    from src.routes.applicants import applicants_bp
+    from src.routes.admin import admin_bp
 
-# Register blueprints
-app.register_blueprint(auth_bp, url_prefix='/api/auth')
-app.register_blueprint(applicants_bp, url_prefix='/api/applicants')
-app.register_blueprint(admin_bp, url_prefix='/api/admin')
+    # Register blueprints
+    app.register_blueprint(auth_bp, url_prefix='/api/auth')
+    app.register_blueprint(applicants_bp, url_prefix='/api/applicants')
+    app.register_blueprint(admin_bp, url_prefix='/api/admin')
+
+    # Create tables
+    db.create_all()
 
 # Health check endpoint
 @app.route('/api/health', methods=['GET'])
@@ -49,10 +54,6 @@ def health_check():
         'status': 'healthy',
         'message': 'Loan Platform API is running'
     })
-
-# Create tables
-with app.app_context():
-    db.create_all()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
