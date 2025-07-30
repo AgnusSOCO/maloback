@@ -1,6 +1,6 @@
 """
-Perfect final working main.py for Railway deployment
-Fixed CURP field length issue
+Updated main.py with comprehensive CORS fix for Vercel deployment
+Replace your current main.py with this version
 """
 
 import os
@@ -27,12 +27,19 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
-# CORS configuration for Vercel
-CORS(app, origins=[
-    "http://localhost:5173",  # Development
-    "https://*.vercel.app",   # All Vercel deployments
-    "https://vercel.app"      # Vercel domain
-])
+# COMPREHENSIVE CORS configuration for Vercel
+CORS(app, 
+     origins=[
+         "http://localhost:3000",      # React dev server
+         "http://localhost:5173",      # Vite dev server
+         "https://*.vercel.app",       # All Vercel subdomains
+         "https://vercel.app",         # Vercel main domain
+         "*"                           # Allow all origins (for testing)
+     ],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"],
+     supports_credentials=True
+)
 
 # Define models
 class User(db.Model):
@@ -47,7 +54,7 @@ class User(db.Model):
     # Personal information
     first_name = db.Column(db.String(100), nullable=False)
     last_name = db.Column(db.String(100), nullable=False)
-    curp = db.Column(db.String(25), unique=True, nullable=False)  # Increased from 18 to 25
+    curp = db.Column(db.String(25), unique=True, nullable=False)
     phone = db.Column(db.String(20))
     
     # Status
@@ -72,13 +79,24 @@ class BankCredential(db.Model):
     encrypted_password = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+# Add explicit OPTIONS handler for preflight requests
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify()
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add('Access-Control-Allow-Headers', "*")
+        response.headers.add('Access-Control-Allow-Methods', "*")
+        return response
+
 # Health check endpoint
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({
         'status': 'healthy',
         'message': 'Loan Platform API is running',
-        'database': 'connected'
+        'database': 'connected',
+        'cors': 'enabled'
     })
 
 # Test endpoint
@@ -87,14 +105,22 @@ def test():
     return jsonify({
         'message': 'API is working!',
         'environment': os.environ.get('FLASK_ENV', 'development'),
-        'database_url': 'configured' if app.config['SQLALCHEMY_DATABASE_URI'] else 'not configured'
+        'database_url': 'configured' if app.config['SQLALCHEMY_DATABASE_URI'] else 'not configured',
+        'cors_origins': 'all_allowed'
     })
 
 # Authentication endpoints
-@app.route('/api/auth/login', methods=['POST'])
+@app.route('/api/auth/login', methods=['POST', 'OPTIONS'])
 def login():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     try:
         data = request.get_json()
+        
+        if not data:
+            return jsonify({'message': 'No data provided'}), 400
+            
         email = data.get('email')
         password = data.get('password')
         
@@ -120,8 +146,11 @@ def login():
     except Exception as e:
         return jsonify({'message': 'Login failed', 'error': str(e)}), 500
 
-@app.route('/api/auth/register', methods=['POST'])
+@app.route('/api/auth/register', methods=['POST', 'OPTIONS'])
 def register():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     try:
         data = request.get_json()
         
@@ -170,8 +199,11 @@ def register():
         return jsonify({'message': 'Registration failed', 'error': str(e)}), 500
 
 # Bank endpoints
-@app.route('/api/applicants/banks', methods=['GET'])
+@app.route('/api/applicants/banks', methods=['GET', 'OPTIONS'])
 def get_banks():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     try:
         banks = BankProvider.query.all()
         return jsonify([{
@@ -224,7 +256,7 @@ with app.app_context():
                     password_hash=generate_password_hash('admin123'),
                     first_name='Admin',
                     last_name='User',
-                    curp='ADMIN123456HDFRRL01',  # This is exactly 20 characters, well within the 25 limit
+                    curp='ADMIN123456HDFRRL01',
                     role='admin',
                     is_active=True,
                     is_approved=True
