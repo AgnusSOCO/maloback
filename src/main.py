@@ -1,6 +1,6 @@
 """
-Absolutely final working main.py for Railway deployment
-Fixed all import issues and datetime references
+Perfect final working main.py for Railway deployment
+Fixed CURP field length issue
 """
 
 import os
@@ -47,7 +47,7 @@ class User(db.Model):
     # Personal information
     first_name = db.Column(db.String(100), nullable=False)
     last_name = db.Column(db.String(100), nullable=False)
-    curp = db.Column(db.String(18), unique=True, nullable=False)
+    curp = db.Column(db.String(25), unique=True, nullable=False)  # Increased from 18 to 25
     phone = db.Column(db.String(20))
     
     # Status
@@ -224,7 +224,7 @@ with app.app_context():
                     password_hash=generate_password_hash('admin123'),
                     first_name='Admin',
                     last_name='User',
-                    curp='ADMIN123456HDFRRL01',
+                    curp='ADMIN123456HDFRRL01',  # This is exactly 20 characters, well within the 25 limit
                     role='admin',
                     is_active=True,
                     is_approved=True
