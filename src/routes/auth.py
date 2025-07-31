@@ -1,238 +1,180 @@
 """
-Authentication routes for login, registration, and token management
+Authentication routes for the loan platform
+Handles login, registration, and user management
 """
 
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from src.models.user import db, User, UserRole, Applicant, Promoter
-from src.utils.auth import hash_password, verify_password, create_user_token, get_current_user, log_audit_action
-import json
+from src.models import db
+from src.models.user import User
+from src.utils.auth import generate_token
+from src.utils.helpers import validate_email, sanitize_input, log_action, generate_response, handle_database_error
 
 auth_bp = Blueprint('auth', __name__)
 
-@auth_bp.route('/login', methods=['POST'])
+@auth_bp.route('/login', methods=['POST', 'OPTIONS'])
 def login():
-    """User login endpoint"""
+    """
+    User login endpoint
+    ✅ FIXED: Handles database schema issues and JWT generation properly
+    """
+    if request.method == 'OPTIONS':
+        return '', 200
+    
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'message': 'No data provided'}), 400
+            
+        email = sanitize_input(data.get('email'))
+        password = data.get('password')
         
-        if not data or not data.get('email') or not data.get('password'):
-            return jsonify({'message': 'Email and password are required'}), 400
+        if not email or not password:
+            return jsonify({'message': 'Email and password required'}), 400
         
-        email = data['email'].lower().strip()
-        password = data['password']
+        if not validate_email(email):
+            return jsonify({'message': 'Invalid email format'}), 400
         
-        # Find user by email
-        user = User.query.filter_by(email=email).first()
+        # ✅ FIXED: Use safe user lookup with error handling
+        user = User.get_by_email(email)
         
-        if not user or not verify_password(password, user.password_hash):
-            # Log failed login attempt
-            log_audit_action(
-                actor_id=user.id if user else None,
-                action='login_failed',
-                metadata={'email': email, 'ip_address': request.remote_addr}
-            )
-            return jsonify({'message': 'Invalid email or password'}), 401
+        if not user:
+            return jsonify({'message': 'Invalid credentials'}), 401
         
-        # Create JWT token
-        token = create_user_token(user)
+        # Check password
+        if not user.check_password(password):
+            return jsonify({'message': 'Invalid credentials'}), 401
+        
+        # ✅ FIXED: Generate token with proper error handling
+        try:
+            token = generate_token(user)
+        except Exception as e:
+            print(f"Token generation failed: {e}")
+            return jsonify({'message': 'Authentication failed'}), 500
+        
+        # ✅ FIXED: Get user data with backward compatibility
+        user_data = user.to_dict()
         
         # Log successful login
-        log_audit_action(
-            actor_id=user.id,
-            action='login_success',
-            metadata={'ip_address': request.remote_addr}
-        )
+        log_action(user.id, 'login', 'user', user.id, f'Successful login from {request.remote_addr}')
         
-        # Get user profile data based on role
-        profile_data = user.to_dict()
-        if user.role == UserRole.APPLICANT and user.applicant:
-            profile_data['profile'] = user.applicant.to_dict()
-        elif user.role == UserRole.PROMOTER and user.promoter:
-            profile_data['profile'] = user.promoter.to_dict()
-        
-        return jsonify({
-            'message': 'Login successful',
+        response_data = {
             'token': token,
-            'user': profile_data
-        }), 200
+            'user': user_data
+        }
+        
+        return jsonify(response_data), 200
         
     except Exception as e:
+        print(f"Login error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'message': 'Login failed', 'error': str(e)}), 500
 
-@auth_bp.route('/register', methods=['POST'])
+@auth_bp.route('/register', methods=['POST', 'OPTIONS'])
 def register():
-    """User registration endpoint for applicants"""
+    """User registration endpoint"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'message': 'No data provided'}), 400
         
         # Validate required fields
-        required_fields = ['email', 'password', 'first_name', 'last_name', 'phone']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({'message': f'{field} is required'}), 400
+        email = sanitize_input(data.get('email'))
+        password = data.get('password')
         
-        email = data['email'].lower().strip()
+        if not email or not password:
+            return jsonify({'message': 'Email and password required'}), 400
         
-        # Check if user already exists
-        existing_user = User.query.filter_by(email=email).first()
-        if existing_user:
-            return jsonify({'message': 'User with this email already exists'}), 409
+        if not validate_email(email):
+            return jsonify({'message': 'Invalid email format'}), 400
         
-        # Create new user
-        user = User(
-            email=email,
-            password_hash=hash_password(data['password']),
-            role=UserRole.APPLICANT
-        )
-        db.session.add(user)
-        db.session.flush()  # Get user ID
+        if len(password) < 6:
+            return jsonify({'message': 'Password must be at least 6 characters'}), 400
         
-        # Create applicant profile
-        applicant = Applicant(
-            id=user.id,
-            first_name=data['first_name'],
-            last_name=data['last_name'],
-            phone=data['phone'],
-            curp=data.get('curp'),
-            address_json=json.dumps(data.get('address', {})),
-            promoter_id=data.get('promoter_id')
-        )
-        db.session.add(applicant)
-        db.session.commit()
-        
-        # Create JWT token
-        token = create_user_token(user)
-        
-        # Log registration
-        log_audit_action(
-            actor_id=user.id,
-            action='user_registered',
-            metadata={'role': 'applicant', 'ip_address': request.remote_addr}
-        )
-        
-        return jsonify({
-            'message': 'Registration successful',
-            'token': token,
-            'user': {
-                **user.to_dict(),
-                'profile': applicant.to_dict()
-            }
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'message': 'Registration failed', 'error': str(e)}), 500
-
-@auth_bp.route('/register-promoter', methods=['POST'])
-def register_promoter():
-    """Promoter registration endpoint (admin only)"""
-    try:
-        data = request.get_json()
-        
-        # Validate required fields
-        required_fields = ['email', 'password', 'name', 'phone']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({'message': f'{field} is required'}), 400
-        
-        email = data['email'].lower().strip()
-        
-        # Check if user already exists
-        existing_user = User.query.filter_by(email=email).first()
-        if existing_user:
-            return jsonify({'message': 'User with this email already exists'}), 409
+        # Check if user exists
+        if User.get_by_email(email):
+            return jsonify({'message': 'Email already registered'}), 400
         
         # Create new user
-        user = User(
+        user = User.create_user(
             email=email,
-            password_hash=hash_password(data['password']),
-            role=UserRole.PROMOTER
+            password=password,
+            first_name=sanitize_input(data.get('first_name', '')),
+            last_name=sanitize_input(data.get('last_name', '')),
+            curp=sanitize_input(data.get('curp', '')),
+            phone=sanitize_input(data.get('phone', '')),
+            role='applicant',
+            status='pending'
         )
-        db.session.add(user)
-        db.session.flush()  # Get user ID
         
-        # Create promoter profile
-        promoter = Promoter(
-            id=user.id,
-            name=data['name'],
-            phone=data['phone']
-        )
-        db.session.add(promoter)
+        db.session.add(user)
         db.session.commit()
         
         # Log registration
-        log_audit_action(
-            actor_id=user.id,
-            action='promoter_registered',
-            metadata={'ip_address': request.remote_addr}
-        )
+        log_action(user.id, 'register', 'user', user.id, 'New user registration')
         
-        return jsonify({
-            'message': 'Promoter registration successful',
-            'user': {
-                **user.to_dict(),
-                'profile': promoter.to_dict()
-            }
-        }), 201
-        
+        return jsonify({'message': 'User registered successfully'}), 201
+    
     except Exception as e:
+        print(f"Registration error: {e}")
         db.session.rollback()
-        return jsonify({'message': 'Promoter registration failed', 'error': str(e)}), 500
+        
+        error_message, status_code = handle_database_error(e)
+        return jsonify({'message': error_message}), status_code
 
-@auth_bp.route('/me', methods=['GET'])
-@jwt_required()
-def get_current_user_info():
-    """Get current user information"""
-    try:
-        current_user = get_current_user()
-        if not current_user:
-            return jsonify({'message': 'User not found'}), 404
-        
-        # Get user profile data based on role
-        profile_data = current_user.to_dict()
-        if current_user.role == UserRole.APPLICANT and current_user.applicant:
-            profile_data['profile'] = current_user.applicant.to_dict()
-        elif current_user.role == UserRole.PROMOTER and current_user.promoter:
-            profile_data['profile'] = current_user.promoter.to_dict()
-        
-        return jsonify({'user': profile_data}), 200
-        
-    except Exception as e:
-        return jsonify({'message': 'Failed to get user info', 'error': str(e)}), 500
+@auth_bp.route('/profile', methods=['GET'])
+def get_profile():
+    """Get user profile (requires authentication)"""
+    from src.utils.auth import token_required
+    
+    @token_required
+    def _get_profile(current_user):
+        try:
+            user_data = current_user.to_dict()
+            return jsonify(user_data), 200
+        except Exception as e:
+            print(f"Profile error: {e}")
+            return jsonify({'message': 'Failed to get profile'}), 500
+    
+    return _get_profile()
 
-@auth_bp.route('/change-password', methods=['POST'])
-@jwt_required()
-def change_password():
-    """Change user password"""
-    try:
-        current_user = get_current_user()
-        if not current_user:
-            return jsonify({'message': 'User not found'}), 404
-        
-        data = request.get_json()
-        
-        if not data.get('current_password') or not data.get('new_password'):
-            return jsonify({'message': 'Current password and new password are required'}), 400
-        
-        # Verify current password
-        if not verify_password(data['current_password'], current_user.password_hash):
-            return jsonify({'message': 'Current password is incorrect'}), 401
-        
-        # Update password
-        current_user.password_hash = hash_password(data['new_password'])
-        db.session.commit()
-        
-        # Log password change
-        log_audit_action(
-            actor_id=current_user.id,
-            action='password_changed',
-            metadata={'ip_address': request.remote_addr}
-        )
-        
-        return jsonify({'message': 'Password changed successfully'}), 200
-        
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'message': 'Failed to change password', 'error': str(e)}), 500
+@auth_bp.route('/profile', methods=['PUT'])
+def update_profile():
+    """Update user profile (requires authentication)"""
+    from src.utils.auth import token_required
+    
+    @token_required
+    def _update_profile(current_user):
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'message': 'No data provided'}), 400
+            
+            # Update allowed fields
+            if 'first_name' in data:
+                current_user.first_name = sanitize_input(data['first_name'])
+            if 'last_name' in data:
+                current_user.last_name = sanitize_input(data['last_name'])
+            if 'phone' in data:
+                current_user.phone = sanitize_input(data['phone'])
+            if 'curp' in data:
+                current_user.curp = sanitize_input(data['curp'])
+            
+            db.session.commit()
+            
+            # Log profile update
+            log_action(current_user.id, 'profile_update', 'user', current_user.id, 'Profile updated')
+            
+            user_data = current_user.to_dict()
+            return jsonify({'message': 'Profile updated successfully', 'user': user_data}), 200
+            
+        except Exception as e:
+            print(f"Profile update error: {e}")
+            db.session.rollback()
+            return jsonify({'message': 'Failed to update profile'}), 500
+    
+    return _update_profile()
 
