@@ -3,10 +3,12 @@ Main application file for the modular loan platform
 ✅ Fixes HTTP 500 login error with database migration
 ✅ Preserves all functionality: admin password visibility, status system, tickets
 ✅ Proper modular structure
+✅ FIXED: JSON serialization error in health check
 """
 
 import os
 import sys
+from datetime import datetime
 from flask import Flask, send_from_directory, jsonify
 from flask_cors import CORS
 
@@ -64,12 +66,15 @@ def create_app():
     # Health check and basic routes
     @app.route('/api/health', methods=['GET'])
     def health_check():
-        """Health check endpoint"""
+        """
+        Health check endpoint
+        ✅ FIXED: JSON serialization error
+        """
         try:
             db_info = get_database_info()
             return jsonify({
                 'status': 'healthy',
-                'timestamp': db.func.now(),
+                'timestamp': datetime.utcnow().isoformat(),  # ✅ FIXED: Use serializable timestamp
                 'cors': 'enabled',
                 'database': db_info['status'],
                 'features': ['auth', 'bank_credentials', 'tickets', 'admin_panel'],
@@ -78,7 +83,8 @@ def create_app():
         except Exception as e:
             return jsonify({
                 'status': 'error',
-                'message': str(e)
+                'message': str(e),
+                'timestamp': datetime.utcnow().isoformat()  # ✅ FIXED: Use serializable timestamp
             }), 500
     
     @app.route('/api/test', methods=['GET'])
@@ -88,7 +94,8 @@ def create_app():
             'message': 'Modular API is working!',
             'environment': os.environ.get('FLASK_ENV', 'production'),
             'features': ['auth', 'bank_credentials', 'tickets', 'admin_panel'],
-            'version': '2.0.0-modular'
+            'version': '2.0.0-modular',
+            'timestamp': datetime.utcnow().isoformat()
         }), 200
     
     # Frontend serving routes
@@ -110,7 +117,8 @@ def create_app():
                 return jsonify({
                     'message': 'Loan Platform API',
                     'version': '2.0.0-modular',
-                    'status': 'running'
+                    'status': 'running',
+                    'timestamp': datetime.utcnow().isoformat()
                 }), 200
     
     # ✅ CRITICAL: Initialize database with migration on startup
