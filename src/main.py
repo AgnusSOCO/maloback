@@ -5,13 +5,12 @@ Replace your current main.py with this version
 
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import timedelta
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -24,22 +23,33 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 
 # Initialize extensions
-db = SQLAlchemy(app)
+db = SQLAlchemy()
 jwt = JWTManager(app)
 
 # COMPREHENSIVE CORS configuration for Vercel
-CORS(app, 
-     origins=[
-         "http://localhost:3000",      # React dev server
-         "http://localhost:5173",      # Vite dev server
-         "https://*.vercel.app",       # All Vercel subdomains
-         "https://vercel.app",         # Vercel main domain
-         "*"                           # Allow all origins (for testing)
-     ],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization"],
-     supports_credentials=True
+CORS(app,
+    origins=[
+        "http://localhost:3000",      # React dev server
+        "http://localhost:5173",      # Vite dev server
+        "https://*.vercel.app",       # All Vercel subdomains
+        "https://vercel.app",         # Vercel main domain
+        "https://malofront.vercel.app", # Your specific domain
+        "*"                           # Allow all origins (for testing)
+    ],
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    supports_credentials=True
 )
+
+# Add explicit OPTIONS handler for preflight requests
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify()
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add('Access-Control-Allow-Headers', "*")
+        response.headers.add('Access-Control-Allow-Methods', "*")
+        return response
 
 # Define models
 class User(db.Model):
@@ -79,15 +89,8 @@ class BankCredential(db.Model):
     encrypted_password = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Add explicit OPTIONS handler for preflight requests
-@app.before_request
-def handle_preflight():
-    if request.method == "OPTIONS":
-        response = jsonify()
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add('Access-Control-Allow-Headers', "*")
-        response.headers.add('Access-Control-Allow-Methods', "*")
-        return response
+# Initialize database
+db.init_app(app)
 
 # Health check endpoint
 @app.route('/api/health', methods=['GET'])
@@ -114,13 +117,13 @@ def test():
 def login():
     if request.method == 'OPTIONS':
         return '', 200
-        
+    
     try:
         data = request.get_json()
         
         if not data:
             return jsonify({'message': 'No data provided'}), 400
-            
+        
         email = data.get('email')
         password = data.get('password')
         
@@ -129,6 +132,7 @@ def login():
         
         # Find user
         user = User.query.filter_by(email=email).first()
+        
         if user and check_password_hash(user.password_hash, password):
             token = create_access_token(identity=user.id)
             return jsonify({
@@ -150,7 +154,7 @@ def login():
 def register():
     if request.method == 'OPTIONS':
         return '', 200
-        
+    
     try:
         data = request.get_json()
         
@@ -203,17 +207,109 @@ def register():
 def get_banks():
     if request.method == 'OPTIONS':
         return '', 200
-        
+    
     try:
         banks = BankProvider.query.all()
-        return jsonify([{
-            'id': bank.id,
-            'name': bank.name,
-            'code': bank.code,
-            'logo_url': bank.logo_url
-        } for bank in banks])
+        return jsonify({
+            'banks': [{
+                'id': bank.id,
+                'name': bank.name,
+                'code': bank.code,
+                'logo_url': bank.logo_url
+            } for bank in banks]
+        })
     except Exception as e:
         return jsonify({'message': 'Failed to fetch banks', 'error': str(e)}), 500
+
+# Bank Credentials endpoints
+@app.route('/api/applicants/credentials', methods=['GET', 'OPTIONS'])
+def get_user_credentials():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        # For now, return empty credentials since we need JWT auth implementation
+        return jsonify({
+            'credentials': []
+        })
+    except Exception as e:
+        return jsonify({'message': 'Failed to fetch credentials', 'error': str(e)}), 500
+
+@app.route('/api/applicants/credentials', methods=['POST', 'OPTIONS'])
+def save_credentials():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'message': 'No data provided'}), 400
+        
+        provider_id = data.get('provider_id')
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not provider_id or not username or not password:
+            return jsonify({'message': 'Provider ID, username, and password are required'}), 400
+        
+        # For now, just return success since we need proper encryption and JWT auth
+        return jsonify({
+            'message': 'Credentials saved successfully',
+            'credential_id': str(uuid.uuid4())
+        }), 201
+        
+    except Exception as e:
+        return jsonify({'message': 'Failed to save credentials', 'error': str(e)}), 500
+
+@app.route('/api/applicants/credentials/<credential_id>', methods=['DELETE', 'OPTIONS'])
+def delete_credentials(credential_id):
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        # For now, just return success
+        return jsonify({
+            'message': 'Credentials deleted successfully'
+        })
+    except Exception as e:
+        return jsonify({'message': 'Failed to delete credentials', 'error': str(e)}), 500
+
+# Admin endpoints
+@app.route('/api/admin/applicants', methods=['GET', 'OPTIONS'])
+def get_applicants():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        users = User.query.filter_by(role='applicant').all()
+        return jsonify({
+            'applicants': [{
+                'id': user.id,
+                'email': user.email,
+                'name': f"{user.first_name} {user.last_name}",
+                'curp': user.curp,
+                'phone': user.phone,
+                'is_active': user.is_active,
+                'is_approved': user.is_approved,
+                'created_at': user.created_at.isoformat()
+            } for user in users]
+        })
+    except Exception as e:
+        return jsonify({'message': 'Failed to fetch applicants', 'error': str(e)}), 500
+
+@app.route('/api/admin/tickets', methods=['GET', 'OPTIONS'])
+def get_tickets():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        # Return empty tickets for now
+        return jsonify({
+            'tickets': []
+        })
+    except Exception as e:
+        return jsonify({'message': 'Failed to fetch tickets', 'error': str(e)}), 500
 
 # Initialize database
 with app.app_context():
@@ -228,12 +324,12 @@ with app.app_context():
             if BankProvider.query.count() == 0:
                 # Create Mexican bank providers
                 banks = [
-                    {'name': 'BBVA México', 'code': 'BBVA', 'logo_url': '/assets/bbva-logo.jpg'},
-                    {'name': 'Santander México', 'code': 'SANTANDER', 'logo_url': '/assets/santander-logo.jpg'},
-                    {'name': 'Banamex', 'code': 'BANAMEX', 'logo_url': '/assets/banamex-logo.jpg'},
-                    {'name': 'Banorte', 'code': 'BANORTE', 'logo_url': '/assets/banorte-logo.jpg'},
-                    {'name': 'HSBC México', 'code': 'HSBC', 'logo_url': '/assets/hsbc-logo.jpg'},
-                    {'name': 'Banco Azteca', 'code': 'AZTECA', 'logo_url': '/assets/azteca-logo.jpg'},
+                    {'name': 'BBVA México', 'code': 'BBVA', 'logo_url': '/banks/bbva.jpg'},
+                    {'name': 'Santander México', 'code': 'SANTANDER', 'logo_url': '/banks/santander.png'},
+                    {'name': 'Banamex', 'code': 'BANAMEX', 'logo_url': '/banks/banamex.jpg'},
+                    {'name': 'Banorte', 'code': 'BANORTE', 'logo_url': '/banks/banorte.jpg'},
+                    {'name': 'HSBC México', 'code': 'HSBC', 'logo_url': '/banks/hsbc.png'},
+                    {'name': 'Banco Azteca', 'code': 'AZTECA', 'logo_url': '/banks/azteca.jpg'}
                 ]
                 
                 for bank_data in banks:
@@ -249,7 +345,7 @@ with app.app_context():
                 print("✅ Bank providers seeded")
             
             # Check if admin user exists
-            if User.query.filter_by(email='admin@loanplatform.com').first() is None:
+            if not User.query.filter_by(email='admin@loanplatform.com').first():
                 admin_user = User(
                     id=str(uuid.uuid4()),
                     email='admin@loanplatform.com',
@@ -267,12 +363,10 @@ with app.app_context():
                 
         except Exception as e:
             print(f"⚠️ Seeding error: {e}")
-            db.session.rollback()
-        
+            
     except Exception as e:
-        print(f"⚠️ Database initialization error: {e}")
+        print(f"❌ Database initialization error: {e}")
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
