@@ -1,5 +1,4 @@
-"""
-Updated main.py with fixed database persistence for bank credentials
+""" Updated main.py with fixed database persistence for bank credentials
 Replace your current main.py with this version
 """
 
@@ -8,7 +7,6 @@ import uuid
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -19,7 +17,6 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///loan_platform.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 
 # Initialize extensions
@@ -27,6 +24,7 @@ db = SQLAlchemy()
 jwt = JWTManager(app)
 
 # COMPREHENSIVE CORS configuration for Vercel
+from flask_cors import CORS
 CORS(app,
     origins=[
         "http://localhost:3000",      # React dev server
@@ -191,10 +189,10 @@ def login():
                     'role': user.role,
                     'name': f"{user.first_name} {user.last_name}"
                 }
-            })
+            }), 201
         else:
             return jsonify({'message': 'Invalid credentials'}), 401
-            
+    
     except Exception as e:
         return jsonify({'message': 'Login failed', 'error': str(e)}), 500
 
@@ -245,7 +243,7 @@ def register():
                 'name': f"{user.first_name} {user.last_name}"
             }
         }), 201
-        
+    
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': 'Registration failed', 'error': str(e)}), 500
@@ -298,7 +296,6 @@ def get_user_credentials():
                 'provider_name': cred.provider.name if cred.provider else 'Unknown'
             } for cred in credentials]
         })
-        
     except Exception as e:
         return jsonify({'message': 'Failed to fetch credentials', 'error': str(e)}), 500
 
@@ -332,7 +329,7 @@ def save_credentials():
         
         # Check if credentials already exist for this user and provider
         existing = BankCredential.query.filter_by(
-            user_id=user.id, 
+            user_id=user.id,
             provider_id=provider_id
         ).first()
         
@@ -360,7 +357,7 @@ def save_credentials():
             'credential_id': credential_id,
             'message': 'Credentials saved successfully'
         }), 201
-        
+    
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': 'Failed to save credentials', 'error': str(e)}), 500
@@ -379,7 +376,7 @@ def delete_credentials(credential_id):
         db.session.commit()
         
         return jsonify({'message': 'Credentials deleted successfully'})
-        
+    
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': 'Failed to delete credentials', 'error': str(e)}), 500
@@ -424,6 +421,40 @@ def get_tickets():
             }
         ]
     })
+
+# NEW: Admin endpoint to get applicant's bank credentials
+@app.route('/api/admin/applicants/<applicant_id>/credentials', methods=['GET', 'OPTIONS'])
+def get_applicant_credentials(applicant_id):
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        # Verify the applicant exists
+        applicant = User.query.filter_by(id=applicant_id, role='applicant').first()
+        if not applicant:
+            return jsonify({'message': 'Applicant not found'}), 404
+        
+        # Get all bank credentials for this applicant
+        credentials = BankCredential.query.filter_by(user_id=applicant_id).all()
+        
+        return jsonify({
+            'applicant': {
+                'id': applicant.id,
+                'name': f"{applicant.first_name} {applicant.last_name}",
+                'email': applicant.email
+            },
+            'credentials': [{
+                'id': cred.id,
+                'provider_id': cred.provider_id,
+                'provider_name': cred.provider.name if cred.provider else 'Unknown',
+                'username': cred.encrypted_username,  # In production, decrypt this for admin
+                'created_at': cred.created_at.isoformat(),
+                'bank_code': cred.provider.code if cred.provider else None
+            } for cred in credentials]
+        })
+    
+    except Exception as e:
+        return jsonify({'message': 'Failed to fetch applicant credentials', 'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
